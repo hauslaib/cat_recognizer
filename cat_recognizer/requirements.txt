@@ -1,0 +1,4 @@
+numpy
+tensorflow-cpu
+scikit-learn
+Pillow
