@@ -1,4 +1,4 @@
-ARG BUILD_FROM=ghcr.io/hassio-addons/base-python:3.9
+ARG BUILD_FROM=ghcr.io/hassio-addons/base-debian:11.0.0
 FROM $BUILD_FROM
 
 # Install build dependencies
@@ -20,6 +20,9 @@ COPY cat_recognizer.py ./
 
 # Install Python dependencies
 RUN pip3 install --no-cache-dir -r requirements.txt
+
+# Expose the port (if needed)
+# EXPOSE 8123
 
 # Run the cat recognizer script
 CMD ["python3", "cat_recognizer.py"]
