@@ -1,8 +1,15 @@
-ARG BUILD_FROM
+ARG BUILD_FROM=ghcr.io/hassio-addons/base-python:3.9
 FROM $BUILD_FROM
 
 # Install build dependencies
-RUN apk add --no-cache python3 python3-dev py3-pip build-base jpeg-dev zlib-dev openblas-dev freetype-dev libpng-dev
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libopenblas-dev \
+    libjpeg-dev \
+    zlib1g-dev \
+    libfreetype6-dev \
+    libpng-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Set the working directory
 WORKDIR /usr/src/app
