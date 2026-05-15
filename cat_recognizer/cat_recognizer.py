@@ -1,106 +1,97 @@
+"""Watch Frigate's cat snapshots and label each with the identified cat's name.
+
+Requires a trained model produced by train.py. If the model is missing the
+service waits for it to appear so you can train without restarting the add-on.
+"""
 import os
 import time
-import numpy as np
-from tensorflow.keras.applications.vgg16 import VGG16, preprocess_input
-from tensorflow.keras.preprocessing import image
-from tensorflow.keras.models import Model
-from sklearn.cluster import KMeans
+
 from PIL import Image, ImageDraw, ImageFont
 
-# Paths inside the add-on container
-FRIGATE_CLIPS_DIR = '/media/frigate/clips'  # Adjust this path as per your Frigate setup
-HA_WWW_DIR = '/config/www'                  # Home Assistant www directory
+from cat_identifier import CatIdentifier
 
-# Path to Frigate's snapshot folder for cat detections
-folder_path = os.path.join(FRIGATE_CLIPS_DIR, 'cat')  # Update based on your Frigate setup
+FRIGATE_CLIPS_DIR = '/media/frigate/clips'
+HA_WWW_DIR = '/config/www'
+MODEL_PATH = '/share/cat_recognizer_model.joblib'
 
-# Output folder for labeled images
-output_folder = os.path.join(HA_WWW_DIR, 'cat_images')
+FOLDER_PATH = os.path.join(FRIGATE_CLIPS_DIR, 'cat')
+OUTPUT_FOLDER = os.path.join(HA_WWW_DIR, 'cat_images')
+POLL_INTERVAL_SECONDS = 10
+MODEL_WAIT_SECONDS = 30
+VALID_EXTS = {'.jpg', '.jpeg', '.png'}
 
-# Ensure the output directory exists
-os.makedirs(output_folder, exist_ok=True)
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-# Load the pre-trained VGG16 model
-base_model = VGG16(weights='imagenet')
-model = Model(inputs=base_model.input, outputs=base_model.get_layer('fc2').output)
 
 def get_image_paths(folder_path):
-    """Get a list of image file paths in the given folder."""
-    valid_extensions = ['.jpg', '.jpeg', '.png']
-    image_paths = []
-    for root, dirs, files in os.walk(folder_path):
+    paths = []
+    if not os.path.isdir(folder_path):
+        return paths
+    for root, _, files in os.walk(folder_path):
         for f in files:
-            if os.path.splitext(f)[1].lower() in valid_extensions:
-                image_paths.append(os.path.join(root, f))
-    return image_paths
+            if os.path.splitext(f)[1].lower() in VALID_EXTS:
+                paths.append(os.path.join(root, f))
+    return paths
 
-def load_and_extract_features(image_paths):
-    """Load images and extract features using the VGG16 model."""
-    features = []
-    for img_path in image_paths:
+
+def _load_font():
+    for candidate in (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ):
         try:
-            img = image.load_img(img_path, target_size=(224, 224))
-            x = image.img_to_array(img)
-            x = np.expand_dims(x, axis=0)
-            x = preprocess_input(x)
-            feature = model.predict(x)
-            features.append(feature.flatten())
-        except Exception as e:
-            print(f"Error processing {img_path}: {e}")
-    return np.array(features)
+            return ImageFont.truetype(candidate, 24)
+        except OSError:
+            continue
+    return ImageFont.load_default()
 
-def label_and_save_images(image_paths, clusters, output_folder):
-    """Label images with their cluster and save them to the output folder."""
-    for img_path, cluster in zip(image_paths, clusters):
-        try:
-            img = Image.open(img_path)
-            draw = ImageDraw.Draw(img)
-            font = ImageFont.load_default()
-            text_position = (10, 10)
-            text = f"Cat {cluster}"
-            draw.text(text_position, text, fill=(255, 0, 0), font=font)
-            base_name = os.path.basename(img_path)
-            output_path = os.path.join(output_folder, base_name)
-            img.save(output_path)
-            # Save the latest image as 'latest_cat.jpg' for easy reference
-            latest_image_path = os.path.join(output_folder, 'latest_cat.jpg')
-            img.save(latest_image_path)
-        except Exception as e:
-            print(f"Error labeling {img_path}: {e}")
 
-# Initialize variables
-processed_images = set()
-features = np.empty((0, 4096))
-image_paths = []
-k = 4  # Number of cats to distinguish
-kmeans = KMeans(n_clusters=k, random_state=0)
+_FONT = None
 
-print("Starting the cat detection script...")
-while True:
-    current_image_paths = get_image_paths(folder_path)
-    new_image_paths = [img_path for img_path in current_image_paths if img_path not in processed_images]
 
-    if new_image_paths:
-        print(f"Found {len(new_image_paths)} new images. Processing...")
-        # Extract features for new images
-        new_features = load_and_extract_features(new_image_paths)
+def label_and_save(img_path, label, score, output_folder):
+    global _FONT
+    if _FONT is None:
+        _FONT = _load_font()
+    img = Image.open(img_path).convert('RGB')
+    draw = ImageDraw.Draw(img)
+    draw.text((10, 10), f"{label} ({score:.2f})", fill=(255, 0, 0), font=_FONT)
+    img.save(os.path.join(output_folder, os.path.basename(img_path)))
+    img.save(os.path.join(output_folder, 'latest_cat.jpg'))
 
-        # Append features and image paths
-        features = np.vstack([features, new_features])
-        image_paths.extend(new_image_paths)
 
-        # Update processed images
-        processed_images.update(new_image_paths)
+def wait_for_model(path):
+    warned = False
+    while not os.path.exists(path):
+        if not warned:
+            print(
+                f"Trained model not found at {path}. "
+                "Run train.py with labeled training images; this service will pick it up."
+            )
+            warned = True
+        time.sleep(MODEL_WAIT_SECONDS)
 
-        # Re-cluster using all available features
-        clusters = kmeans.fit_predict(features)
 
-        # Label and save images
-        label_and_save_images(image_paths, clusters, output_folder)
+def main():
+    print("Starting cat recognizer...")
+    wait_for_model(MODEL_PATH)
+    identifier = CatIdentifier(MODEL_PATH)
+    print(f"Loaded model with {len(identifier.classes)} cats: {identifier.classes}")
 
-        # Log clustering results
-        for img_path, cluster in zip(image_paths, clusters):
-            print(f"Image {os.path.basename(img_path)} is identified as Cat {cluster}")
+    processed = set()
+    while True:
+        for img_path in get_image_paths(FOLDER_PATH):
+            if img_path in processed:
+                continue
+            processed.add(img_path)
+            try:
+                label, score = identifier.identify(img_path)
+                label_and_save(img_path, label, score, OUTPUT_FOLDER)
+                print(f"{os.path.basename(img_path)}: {label} (score={score:.3f})")
+            except Exception as e:
+                print(f"Error processing {img_path}: {e}")
+        time.sleep(POLL_INTERVAL_SECONDS)
 
-    # Sleep before checking for new images again
-    time.sleep(10)
+
+if __name__ == '__main__':
+    main()
