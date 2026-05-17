@@ -14,8 +14,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Set the working directory
 WORKDIR /usr/src/app
 
-# Copy requirements and script
+# Copy requirements and scripts
 COPY requirements.txt ./
+COPY feature_extractor.py ./
+COPY cat_identifier.py ./
+COPY train.py ./
 COPY cat_recognizer.py ./
 
 # Install Python dependencies
